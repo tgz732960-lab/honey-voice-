@@ -1,19 +1,25 @@
-from flask import Flask, request, render_template_string, jsonify
+from flask import Flask, request, render_template_string, jsonify, send_file
 import requests
 import os
 from anthropic import Anthropic
 
 app = Flask(__name__)
 
-# Claude API
-anthropic = Anthropic(
-    api_key=os.getenv("ANTHROPIC_API_KEY")
-)
-
-# ElevenLabs API
+# API KEY
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
-# 你的声音ID
+# 检查 key
+if not ANTHROPIC_API_KEY:
+    print("❌ 缺少 ANTHROPIC_API_KEY")
+
+if not ELEVENLABS_API_KEY:
+    print("❌ 缺少 ELEVENLABS_API_KEY")
+
+anthropic = Anthropic(
+    api_key=ANTHROPIC_API_KEY
+)
+
 VOICE_ID = "8gg0WXng9B2Fn5w1rJ7I"
 
 HTML = """
@@ -26,7 +32,7 @@ HTML = """
 
 <body style="font-family: Arial; padding:20px; max-width:600px; margin:auto;">
 
-<h2>Honey Voice</h2>
+<h1>Honey Voice</h1>
 
 <div id="chat"
 style="
@@ -40,19 +46,17 @@ margin-bottom:15px;
 </div>
 
 <input
-    id="userInput"
-    type="text"
-    placeholder="输入内容..."
-    style="
-    width:75%;
-    padding:12px;
-    border-radius:10px;
-    border:1px solid #ccc;
+id="userInput"
+type="text"
+placeholder="输入内容..."
+style="
+width:75%;
+padding:12px;
+border-radius:10px;
+border:1px solid #ccc;
 ">
 
-<button
-onclick="sendMessage()"
-style="padding:12px;">
+<button onclick="sendMessage()" style="padding:12px;">
 发送
 </button>
 
@@ -66,7 +70,7 @@ style="width:100%; margin-top:20px;">
 async function sendMessage() {
 
     const input = document.getElementById("userInput");
-    const text = input.value;
+    const text = input.value.trim();
 
     if (!text) return;
 
@@ -92,25 +96,38 @@ async function sendMessage() {
 
         const data = await response.json();
 
+        // 如果后端报错
+        if (data.error) {
+            chat.innerHTML += `
+                <p style="color:red;">
+                Honey 出错：${data.error}
+                </p>
+            `;
+            return;
+        }
+
         chat.innerHTML += `
             <p><b>Honey：</b>${data.chinese}</p>
         `;
 
         const audio = document.getElementById("audioPlayer");
 
-        audio.src =
-            data.audio_url +
-            "?t=" +
-            new Date().getTime();
+        if (data.audio_url) {
+            audio.src =
+                data.audio_url +
+                "?t=" +
+                new Date().getTime();
 
-        audio.play();
+            audio.play();
+        }
 
         chat.scrollTop = chat.scrollHeight;
 
     } catch (error) {
+
         chat.innerHTML += `
             <p style="color:red;">
-            出错了：${error}
+            请求失败：${error}
             </p>
         `;
     }
@@ -134,7 +151,12 @@ def chat():
 
         user_message = request.json.get("message")
 
-        # Claude 中文回复
+        if not user_message:
+            return jsonify({
+                "error": "没有收到消息"
+            }), 400
+
+        # Claude 回复
         response = anthropic.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=300,
@@ -148,7 +170,7 @@ def chat():
 
         chinese_reply = response.content[0].text
 
-        # 翻译英文（给 ElevenLabs 发音）
+        # 翻译成英文（用于语音）
         translation = anthropic.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=300,
@@ -156,7 +178,7 @@ def chat():
                 {
                     "role": "user",
                     "content":
-                    f"Translate this natural Chinese conversation into natural spoken English only:\\n\\n{chinese_reply}"
+                    f"Translate this Chinese to natural spoken English only:\\n\\n{chinese_reply}"
                 }
             ]
         )
@@ -182,6 +204,13 @@ def chat():
             headers=headers
         )
 
+        # 检查 ElevenLabs 是否成功
+        if audio_response.status_code != 200:
+            return jsonify({
+                "error":
+                f"ElevenLabs失败: {audio_response.text}"
+            }), 500
+
         with open("output.mp3", "wb") as f:
             f.write(audio_response.content)
 
@@ -191,6 +220,9 @@ def chat():
         })
 
     except Exception as e:
+
+        print("报错：", str(e))
+
         return jsonify({
             "error": str(e)
         }), 500
@@ -199,17 +231,15 @@ def chat():
 @app.route("/audio")
 def audio():
 
-    try:
-        with open("output.mp3", "rb") as f:
-            return f.read(), 200, {
-                "Content-Type": "audio/mpeg"
-            }
+    if os.path.exists("output.mp3"):
+        return send_file(
+            "output.mp3",
+            mimetype="audio/mpeg"
+        )
 
-    except:
-        return "No audio", 404
+    return "No audio", 404
 
 
-# Render 健康检查
 @app.route("/health")
 def health():
     return {
